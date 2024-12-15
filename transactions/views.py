@@ -4,28 +4,31 @@ from django.urls import reverse_lazy
 from django.utils import timezone
 from django.shortcuts import get_object_or_404, redirect
 from django.views import View
-from django.http import HttpResponse
+from django.http import HttpResponse,HttpResponseForbidden
 from django.views.generic import CreateView, ListView
-from transactions.constants import DEPOSIT, WITHDRAWAL,LOAN, LOAN_PAID
-from django.core.mail import EmailMessage, EmailMultiAlternatives
-from django.template.loader import render_to_string
+from transactions.constants import DEPOSIT, WITHDRAWAL,LOAN, LOAN_PAID,TRANSFER_MONEY
 from datetime import datetime
 from django.db.models import Sum
+from django.shortcuts import render
 from transactions.forms import (
     DepositForm,
     WithdrawForm,
     LoanRequestForm,
+    TransferForm,
 )
 from transactions.models import Transaction
+from .utils import are_transactions_enabled
+from django.core.mail import EmailMessage,EmailMultiAlternatives
+from django.template.loader import render_to_string
 
-def send_transaction_email(user, amount, subject, template):
-        message = render_to_string(template, {
-            'user' : user,
-            'amount' : amount,
-        })
-        send_email = EmailMultiAlternatives(subject, '', to=[user.email])
-        send_email.attach_alternative(message, "text/html")
-        send_email.send()
+
+def transaction_mail_send(user,subject,amount,template):
+    message=render_to_string(template,{'user':user,'amount':amount})
+    send_mail=EmailMultiAlternatives(subject,'',to=[user.email])
+    send_mail.attach_alternative(message,"text/html")
+    send_mail.send()
+    
+
 
 class TransactionCreateMixin(LoginRequiredMixin, CreateView):
     template_name = 'transactions/transaction_form.html'
@@ -47,6 +50,11 @@ class TransactionCreateMixin(LoginRequiredMixin, CreateView):
         })
 
         return context
+    def dispatch(self, request, *args, **kwargs):
+        if not are_transactions_enabled():
+            messages.error(request, "Bank is bankrupt. Transactions are disabled.")
+            return HttpResponseForbidden("Bank is bankrupt. Transactions are disabled.")
+        return super().dispatch(request, *args, **kwargs)
 
 
 class DepositMoneyView(TransactionCreateMixin):
@@ -74,7 +82,8 @@ class DepositMoneyView(TransactionCreateMixin):
             self.request,
             f'{"{:,.2f}".format(float(amount))}$ was deposited to your account successfully'
         )
-        send_transaction_email(self.request.user, amount, "Deposite Message", "transactions/deposite_email.html")
+        transaction_mail_send(self.request.user,"Deposite MAil",amount,'transactions/deposite_email.html')
+
         return super().form_valid(form)
 
 
@@ -98,7 +107,8 @@ class WithdrawMoneyView(TransactionCreateMixin):
             self.request,
             f'Successfully withdrawn {"{:,.2f}".format(float(amount))}$ from your account'
         )
-        send_transaction_email(self.request.user, amount, "Withdrawal Message", "transactions/withdrawal_email.html")
+        transaction_mail_send(self.request.user,"Withdrawal Mail",amount,'transactions/withdrawal_email.html')
+
         return super().form_valid(form)
 
 class LoanRequestView(TransactionCreateMixin):
@@ -119,7 +129,8 @@ class LoanRequestView(TransactionCreateMixin):
             self.request,
             f'Loan request for {"{:,.2f}".format(float(amount))}$ submitted successfully'
         )
-        send_transaction_email(self.request.user, amount, "Loan Request Message", "transactions/loan_email.html")
+        transaction_mail_send(self.request.user,"Loan Request Mail",amount,'transactions/loan_email.html')
+
         return super().form_valid(form)
     
 class TransactionReportView(LoginRequiredMixin, ListView):
@@ -155,6 +166,7 @@ class TransactionReportView(LoginRequiredMixin, ListView):
 
         return context
     
+    
         
 class PayLoanView(LoginRequiredMixin, View):
     def get(self, request, loan_id):
@@ -180,6 +192,11 @@ class PayLoanView(LoginRequiredMixin, View):
         )
 
         return redirect('loan_list')
+    def dispatch(self, request, *args, **kwargs):
+        if not are_transactions_enabled():
+            messages.error(request, "Bank is bankrupt. Transactions are disabled.")
+            return HttpResponseForbidden("Bank is bankrupt. Transactions are disabled.")
+        return super().dispatch(request, *args, **kwargs)
 
 
 class LoanListView(LoginRequiredMixin,ListView):
@@ -192,3 +209,58 @@ class LoanListView(LoginRequiredMixin,ListView):
         queryset = Transaction.objects.filter(account=user_account,transaction_type=3)
         print(queryset)
         return queryset
+
+
+class TransferMoneyView(LoginRequiredMixin, View):
+    def get(self, request):
+        form = TransferForm(account=request.user.account)
+        return render(request, 'transactions/transfer_form.html', {'form': form, 'title': 'Transfer Money'})
+
+    def get_initial(self):
+        initial = {'transaction_type': TRANSFER_MONEY}
+        return initial
+    def dispatch(self, request, *args, **kwargs):
+        if not are_transactions_enabled():
+            messages.error(request, "Bank is bankrupt. Transactions are disabled.")
+            return HttpResponseForbidden("Bank is bankrupt. Transactions are disabled.")
+        return super().dispatch(request, *args, **kwargs)
+    def post(self, request):
+        form = TransferForm(request.POST, account=request.user.account)
+        if form.is_valid():
+            sender = request.user.account
+            recipient = form.cleaned_data['recipient']
+            amount = form.cleaned_data['amount']
+
+            try:
+                # Deduct from sender's account
+                sender.balance -= amount
+                sender.save(update_fields=['balance'])
+
+                # Add to recipient's account
+                recipient.balance += amount
+                recipient.save(update_fields=['balance'])
+
+                # Log the transaction
+                Transaction.objects.create(
+                    account=sender,
+                    recipient_account=recipient,
+                    transaction_type=5,  # Assuming 5 represents Transfer
+                    amount=amount,
+                    balance_after_transaction=sender.balance  # Pass the sender's balance after the transaction
+                )
+
+                messages.success(
+                    request, f'Successfully transferred ${amount:.2f} to {recipient.user.username}'
+                )
+                transaction_mail_send(self.request.user,"Transfer Money Mail",amount,'transactions/tsender_email.html')
+                transaction_mail_send(recipient.user,"Recive Money Mail",amount,'transactions/treciver_email.html')
+                return redirect('transaction_report')
+
+            except Exception as e:
+                messages.error(request, f"An error occurred: {str(e)}")
+                return render(request, 'transactions/transfer_form.html', {'form': form, 'title': 'Transfer Money'})
+
+        # If form is invalid, re-render with error messages
+        messages.error(request, "Failed to complete the transfer. Please correct the errors below.")
+        return render(request, 'transactions/transfer_form.html', {'form': form, 'title': 'Transfer Money'})
+

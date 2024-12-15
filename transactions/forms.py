@@ -1,5 +1,6 @@
 from django import forms
 from .models import Transaction
+from accounts.models import UserBankAccount
 class TransactionForm(forms.ModelForm):
     class Meta:
         model = Transaction
@@ -65,3 +66,29 @@ class LoanRequestForm(TransactionForm):
         amount = self.cleaned_data.get('amount')
 
         return amount
+
+class TransferForm(forms.Form):
+    recipient_username = forms.CharField(max_length=150)
+    amount = forms.DecimalField(max_digits=10, decimal_places=2)
+
+    def __init__(self, *args, **kwargs):
+        self.account = kwargs.pop('account', None)
+        super().__init__(*args, **kwargs)
+
+    def clean(self):
+        cleaned_data = super().clean()
+        amount = cleaned_data.get("amount")
+        recipient_username = cleaned_data.get("recipient_username")
+
+        # Check if recipient exists
+        try:
+            recipient = UserBankAccount.objects.get(user__username=recipient_username)
+            cleaned_data["recipient"] = recipient
+        except UserBankAccount.DoesNotExist:
+            raise forms.ValidationError("Recipient account not found.")
+
+        # Check if the sender has enough balance
+        if self.account.balance < amount:
+            raise forms.ValidationError("Insufficient balance to complete the transfer.")
+
+        return cleaned_data

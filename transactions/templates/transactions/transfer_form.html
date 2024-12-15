@@ -1,0 +1,38 @@
+{% extends 'base.html' %} {% block head_title %}{{ title }}{% endblock %}
+{%block content %}
+
+<div class="w-full flex mt-5 justify-center">
+  <div class="bg-white w-5/12 rounded-lg">
+    <h1 class="font-bold text-3xl text-center pb-5 pt-10 px-5">{{ title }}</h1>
+    <form method="post" class="px-8 pt-6 pb-8 mb-4">
+      {% csrf_token %}
+
+      <!-- Render form fields dynamically -->
+      {% for field in form %}
+      <div class="mb-4">
+        <label
+          class="block text-gray-700 text-sm font-bold mb-2"
+          for="{{ field.id_for_label }}"
+        >
+          {{ field.label }}
+        </label>
+        {{ field }}
+        <!-- Display errors for each field -->
+        {% for error in field.errors %}
+        <p class="text-red-600 text-sm italic pb-2">{{ error }}</p>
+        {% endfor %}
+      </div>
+      {% endfor %}
+
+      <div class="flex w-full justify-center">
+        <button
+          class="bg-blue-900 text-white hover:text-blue-900 hover:bg-white border border-blue-900 font-bold px-4 py-2 rounded-lg"
+          type="submit"
+        >
+          Submit
+        </button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}
